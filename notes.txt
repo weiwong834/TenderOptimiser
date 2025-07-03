@@ -1,0 +1,33 @@
+| Task            | Tool/Service                   |
+| --------------- | ------------------------------ |
+| Tender search   | TED API                        |
+| AI analysis     | Gemini Pro / Gemini Pro Vision |
+| Hosting backend | AWS Lambda / EC2 + API Gateway |
+| Frontend        | React (Replit or Amplify)      |
+| Model inference | SageMaker / Lambda             |
+| Data storage    | DynamoDB / S3                  |
+| Auth (optional) | AWS Cognito                    |
+
+🚀 Step-by-Step Roadmap
+✅ Phase 1: Core API & Mock Insights
+ Build FastAPI backend to query TED API.
+
+ Return mock optimal bid, compliance.
+
+ Integrate Gemini to generate analysis from tender text.
+
+ Build basic React frontend to trigger backend API.
+
+🧠 Phase 2: ML Model + Gemini
+Train a simple bidding price predictor or compliance classifier (use scikit-learn, host on AWS).
+
+Connect Gemini via Google SDK: send full tender + profile for response.
+
+Store analysis logs in AWS DynamoDB or S3.
+
+☁️ Phase 3: AWS Deployment
+Host FastAPI backend with Lambda or EC2.
+
+Use CloudWatch for logs, Cognito for auth (if needed).
+
+Deploy frontend via Amplify or GitHub Pages → Replit.

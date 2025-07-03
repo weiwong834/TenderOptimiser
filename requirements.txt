@@ -1,0 +1,1 @@
+pip install google-generativeai pdfplumber faiss-cpu fastapi uvicorn python-multipart python-dotenv
