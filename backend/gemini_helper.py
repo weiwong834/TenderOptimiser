@@ -1,5 +1,6 @@
 import google.generativeai as genai
 
+
 def suggest_optimal_bid(new_tender, past_tenders):
     prompt = "You are a bidding advisor. Based on these past tenders:\n"
     for t in past_tenders:

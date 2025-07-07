@@ -3,7 +3,7 @@ from gemini_helper import suggest_optimal_bid
 
 # Simulate input tender
 new_tender = {
-    "title": "agriculture~",
+    "title": "Software Licensing for Public Sector",
     "estimated": "1200000 EUR"
 }
 
@@ -12,3 +12,4 @@ suggestion = suggest_optimal_bid(new_tender, past)
 
 print("\n✅ Gemini's Suggested Bid:")
 print(suggestion)
+
