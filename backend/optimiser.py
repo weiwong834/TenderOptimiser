@@ -3,7 +3,7 @@ from gemini_helper import suggest_optimal_bid
 
 # Simulate input tender
 new_tender = {
-    "title": "agriculture",
+    "title": "agriculture~",
     "estimated": "1200000 EUR"
 }
 
