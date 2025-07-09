@@ -3,12 +3,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 def unwrap(field):
     if isinstance(field, list):
         return ", ".join(str(x) for x in field)
     elif isinstance(field, dict):
         return field.get("eng") or next(iter(field.values()), "N/A")
     return field
+
 
 def test_ted_with_full_fields():
     endpoint = "https://api.ted.europa.eu/v3/notices/search"
@@ -19,24 +21,27 @@ def test_ted_with_full_fields():
     }
 
     payload = {
-        "query": "description-glo ~ \"award\"",
-        "limit": 5,
-        "page": 1,
-        "onlyLatestVersions": False,
-        "paginationMode": "PAGE_NUMBER",
+        "query":
+        "description-glo ~ \"technical\" OR title-glo ~ \"technical\" OR award-criterion-name-lot ~ \"technical\"",
+        "limit":
+        30,
+        "page":
+        1,
+        "onlyLatestVersions":
+        False,
+        "paginationMode":
+        "PAGE_NUMBER",
+        "scope":
+        "ALL",
         "fields": [
-            "TI", "CY", "DS",
-            "winner-country", "winner-name", "winner-decision-date",
-            "tender-value", "tender-value-highest", "tender-value-lowest",
-            "estimated-value-lot", "estimated-value-cur-lot",
-            "BT-711-LotResult", "BT-710-LotResult",
+            "TI", "CY", "DS", "winner-country", "winner-name",
+            "winner-decision-date", "tender-value", "tender-value-highest",
+            "tender-value-lowest", "estimated-value-lot",
+            "estimated-value-cur-lot", "BT-711-LotResult", "BT-710-LotResult",
             "award-criterion-name-lot", "award-criterion-number-weight-lot",
             "tender-rank"
         ]
-
     }
-
-
 
     try:
         response = requests.post(endpoint,
@@ -63,8 +68,10 @@ def test_ted_with_full_fields():
                 decision_date = unwrap(n.get("winner-decision-date", "N/A"))
 
                 rank = unwrap(n.get("tender-rank", "N/A"))
-                criteria_name = unwrap(n.get("award-criterion-name-lot", "N/A"))
-                criteria_weight = unwrap(n.get("award-criterion-number-weight-lot", "N/A"))
+                criteria_name = unwrap(n.get("award-criterion-name-lot",
+                                             "N/A"))
+                criteria_weight = unwrap(
+                    n.get("award-criterion-number-weight-lot", "N/A"))
 
                 print(f"\n--- Tender {i} ---")
                 print(f"Title: {title}")

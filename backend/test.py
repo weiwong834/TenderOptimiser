@@ -1,22 +1,47 @@
-import google.generativeai as genai
-import requests
+#!/usr/bin/env python3
+"""
+Tender Analyzer – Singapore GeBIZ version
+----------------------------------------
+• Extracts keywords for a tender using Gemini 1.5 Flash.
+• Searches the Government‑Procurement‑via‑GeBIZ open dataset for similar awards.
+• Analyses historical pricing and asks Gemini for a recommended bid *range*.
+• Prints a concise console report.
+
+Requires:
+  pip install python-dotenv google-generativeai
+"""
+
+from __future__ import annotations
+
 import os
 import json
+import re
 import statistics
-from dotenv import load_dotenv
+import requests
 from dataclasses import dataclass
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
+
+from dotenv import load_dotenv
+import google.generativeai as genai
+
+# ---------------------------------------------------------------------------
+# 1  Config
+# ---------------------------------------------------------------------------
 
 load_dotenv()
-
-# Configuration
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-TED_API_KEY = os.getenv("TED_API_KEY")
-
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
-    raise ValueError("GEMINI_API_KEY environment variable not set")
+    raise EnvironmentError("GEMINI_API_KEY env var not set")
 
 genai.configure(api_key=GEMINI_API_KEY)
+
+GEBIZ_DATASET_ID = "d_acde1106003906a75c3fa052592f2fcb"
+GEBIZ_ENDPOINT   = "https://data.gov.sg/api/action/datastore_search"
+
+# ---------------------------------------------------------------------------
+# 2  Dataclass to hold the full result
+# ---------------------------------------------------------------------------
+
 
 @dataclass
 class TenderAnalysis:
@@ -25,468 +50,288 @@ class TenderAnalysis:
     pricing_analysis: Dict
     bid_recommendation: Dict
 
+
+# ---------------------------------------------------------------------------
+# 3  Main analyzer
+# ---------------------------------------------------------------------------
+
+
 class TenderAnalyzer:
-    def __init__(self):
-        self.model = genai.GenerativeModel("gemini-pro")
-        self.chat = self.model.start_chat()
+    _GEMINI_MODEL = "gemini-1.5-flash"
 
-        self.ted_headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "User-Agent": "TenderOptimizer/1.0"
-        }
+    def __init__(self) -> None:
+        self.model = genai.GenerativeModel(model_name=self._GEMINI_MODEL)
 
-    def extract_keywords_from_tender(self, tender_description: str, tender_title: str = "") -> List[str]:
-        """Use Gemini to extract relevant keywords for TED API search"""
-        prompt = f"""
-        Analyze this tender information and extract highly specific, detailed keywords for searching similar tenders in the TED database.
+    # ................................................................. utils
 
-        Title: {tender_title}
-        Description: {tender_description}
+    @staticmethod
+    def _fmt_sgd(amount: float | None) -> str:
+        return "–" if amount is None else f"SGD {amount:,.0f}"
 
-        Generate 8-12 HIGHLY SPECIFIC keywords that include:
-
-        1. TECHNICAL SPECIFICATIONS:
-        - Exact technologies mentioned (e.g., "React.js", "PostgreSQL", "REST API")
-        - Specific methodologies (e.g., "Agile development", "DevOps", "CI/CD pipeline")
-        - Technical standards (e.g., "WCAG 2.1", "ISO 27001", "GDPR compliance")
-
-        2. DETAILED SERVICE TYPES:
-        - Specific development services (e.g., "mobile app development", "web application", "database migration")
-        - Maintenance types (e.g., "system maintenance", "technical support", "bug fixes")
-        - Integration specifics (e.g., "API integration", "third-party integration", "legacy system integration")
-
-        3. INDUSTRY-SPECIFIC TERMS:
-        - Sector-specific terminology (e.g., "e-government", "digital transformation", "citizen services")
-        - Domain expertise (e.g., "public administration", "healthcare IT", "financial services")
-        - Compliance requirements (e.g., "data protection", "cybersecurity", "accessibility standards")
-
-        4. PROCUREMENT CATEGORIES:
-        - CPV codes or categories (e.g., "software development", "IT services", "consultancy")
-        - Contract types (e.g., "framework agreement", "multi-year contract", "maintenance contract")
-
-        5. FUNCTIONAL REQUIREMENTS:
-        - Specific functionalities (e.g., "user authentication", "payment processing", "document management")
-        - Performance requirements (e.g., "high availability", "scalability", "performance optimization")
-
-        Examples of GOOD specific keywords:
-        - "mobile application development" (not just "mobile")
-        - "PostgreSQL database" (not just "database")
-        - "REST API integration" (not just "API")
-        - "GDPR compliance implementation" (not just "compliance")
-        - "legacy system modernization" (not just "modernization")
-        - "citizen service portal" (not just "portal")
-
-        Return the keywords as a JSON array like: ["keyword1", "keyword2", "keyword3"]
-        Only return the JSON array, no other text.
-        """
-
-        try:
-            response = self.model.generate_content(prompt)
-            keywords_text = response.text.strip()
-            # Parse the JSON response
-            keywords = json.loads(keywords_text)
-            return keywords
-        except Exception as e:
-            print(f"Error extracting keywords: {e}")
-            # Fallback to basic keyword extraction
-            return self._extract_basic_keywords(tender_description + " " + tender_title)
-
-    def _extract_basic_keywords(self, text: str) -> List[str]:
-        """Enhanced fallback method for detailed keyword extraction"""
-
-        # Technical keywords commonly found in IT tenders
-        technical_keywords = [
-            "software development", "web application", "mobile app", "database", 
-            "API integration", "system integration", "digital transformation",
-            "cybersecurity", "cloud services", "maintenance", "support",
-            "legacy system", "modernization", "user interface", "backend",
-            "frontend", "DevOps", "agile", "testing", "deployment"
-        ]
-
-        # Industry-specific keywords
-        industry_keywords = [
-            "public administration", "e-government", "citizen services",
-            "healthcare IT", "financial services", "education technology",
-            "municipal services", "government portal", "digital services"
-        ]
-
-        # Compliance and standards
-        compliance_keywords = [
-            "GDPR compliance", "data protection", "accessibility", "security",
-            "ISO standards", "quality assurance", "performance optimization"
-        ]
-
-        text_lower = text.lower()
-        found_keywords = []
-
-        # Check for technical keywords
-        for keyword in technical_keywords:
-            if keyword.lower() in text_lower:
-                found_keywords.append(keyword)
-
-        # Check for industry keywords
-        for keyword in industry_keywords:
-            if keyword.lower() in text_lower:
-                found_keywords.append(keyword)
-
-        # Check for compliance keywords
-        for keyword in compliance_keywords:
-            if keyword.lower() in text_lower:
-                found_keywords.append(keyword)
-
-        # If we found specific keywords, return them
-        if found_keywords:
-            return found_keywords[:10]
-
-        # Otherwise fall back to word extraction with better filtering
-        common_words = [
-            'and', 'or', 'the', 'of', 'to', 'in', 'for', 'with', 'by', 'from', 
-            'on', 'at', 'is', 'are', 'was', 'were', 'this', 'that', 'will', 
-            'shall', 'must', 'should', 'would', 'could', 'may', 'can', 'also',
-            'including', 'such', 'other', 'any', 'all', 'each', 'both', 'either'
-        ]
-
-        words = text.lower().split()
-        keywords = []
-
-        # Extract meaningful phrases and words
-        for i, word in enumerate(words):
-            if len(word) > 4 and word not in common_words:
-                # Try to create 2-word phrases for better context
-                if i < len(words) - 1:
-                    next_word = words[i + 1]
-                    if len(next_word) > 3 and next_word not in common_words:
-                        phrase = f"{word} {next_word}"
-                        if phrase not in keywords:
-                            keywords.append(phrase)
-
-                # Also add single word if meaningful
-                if word not in keywords:
-                    keywords.append(word)
-
-        return list(set(keywords))[:10]  # Return unique keywords, max 10
-
-    def search_similar_tenders(self, keywords: List[str], limit: int = 15) -> List[Dict]:
-        """Search for similar tenders using TED API with generated keywords"""
-        # Create more sophisticated search query from keywords
-        query_parts = []
-
-        # Group keywords by importance/specificity
-        high_priority_keywords = []
-        medium_priority_keywords = []
-
-        for keyword in keywords:
-            # Multi-word keywords are usually more specific
-            if ' ' in keyword and any(tech in keyword.lower() for tech in ['development', 'integration', 'services', 'system', 'application']):
-                high_priority_keywords.append(keyword)
-            else:
-                medium_priority_keywords.append(keyword)
-
-        # Build query with priority weighting
-        if high_priority_keywords:
-            # High priority keywords with AND logic for better precision
-            for keyword in high_priority_keywords[:5]:  # Limit to avoid overly complex queries
-                query_parts.append(f'description-glo ~ "{keyword}"')
-
-        if medium_priority_keywords:
-            # Medium priority keywords with OR logic
-            medium_query = " OR ".join([f'description-glo ~ "{keyword}"' for keyword in medium_priority_keywords[:6]])
-            if medium_query:
-                query_parts.append(f"({medium_query})")
-
-        # Combine with AND logic between groups
-        if len(query_parts) > 1:
-            query = " AND ".join(query_parts)
-        else:
-            query = query_parts[0] if query_parts else 'description-glo ~ "software"'
-
-        payload = {
-            "query": query,
-            "limit": limit,
-            "page": 1,
-            "onlyLatestVersions": True,
-            "paginationMode": "PAGE_NUMBER",
-            "fields": [
-                "TI", "CY", "DS",
-                "winner-country", "winner-name", "winner-decision-date",
-                "tender-value", "tender-value-highest", "tender-value-lowest",
-                "estimated-value-lot", "estimated-value-cur-lot",
-                "BT-711-LotResult", "BT-710-LotResult",
-                "award-criterion-name-lot", "award-criterion-number-weight-lot",
-                "tender-rank", "CPV"
-            ]
-        }
-
-        try:
-            response = requests.post(
-                "https://api.ted.europa.eu/v3/notices/search",
-                json=payload,
-                headers=self.ted_headers,
-                timeout=30
-            )
-
-            if response.status_code == 200:
-                data = response.json()
-                tenders = data.get("notices", [])
-
-                # If we get few results, try a simpler query
-                if len(tenders) < 5 and len(query_parts) > 1:
-                    print(f"⚠️  Found only {len(tenders)} tenders, trying broader search...")
-
-                    # Try with just the most important keywords
-                    simple_query = " OR ".join([f'description-glo ~ "{keyword}"' for keyword in keywords[:5]])
-                    payload["query"] = simple_query
-
-                    response = requests.post(
-                        "https://api.ted.europa.eu/v3/notices/search",
-                        json=payload,
-                        headers=self.ted_headers,
-                        timeout=30
-                    )
-
-                    if response.status_code == 200:
-                        data = response.json()
-                        tenders = data.get("notices", [])
-
-                return tenders
-            else:
-                print(f"TED API error: {response.status_code} - {response.text}")
-                return []
-        except Exception as e:
-            print(f"Error searching TED API: {e}")
-            return []
-
-    def _unwrap_field(self, field):
-        """Helper method to unwrap TED API field values"""
-        if isinstance(field, list):
-            return ", ".join(str(x) for x in field)
-        elif isinstance(field, dict):
-            return field.get("eng") or next(iter(field.values()), "N/A")
-        return field or "N/A"
-
-    def _extract_numeric_value(self, value_str: str) -> Optional[float]:
-        """Extract numeric value from string (e.g., '1200000 EUR' -> 1200000)"""
-        if not value_str or value_str == "N/A":
+    @staticmethod
+    def _extract_numeric_value(v: str | float | int | None) -> Optional[float]:
+        if v in (None, "", "N/A"):
             return None
-
-        # Remove common currency symbols and text
-        import re
-        numeric_str = re.sub(r'[^\d.,]', '', str(value_str))
-        numeric_str = numeric_str.replace(',', '')
-
+        if isinstance(v, (int, float)):
+            return float(v)
+        cleaned = re.sub(r"[^\d.,]", "", str(v)).replace(",", "")
         try:
-            return float(numeric_str)
+            return float(cleaned)
         except ValueError:
             return None
 
-    def analyze_pricing(self, tenders: List[Dict], target_estimate: str) -> Dict:
-        """Analyze pricing patterns from similar tenders"""
-        analysis = {
-            "total_tenders": len(tenders),
-            "tenders_with_pricing": 0,
-            "estimated_values": [],
-            "awarded_values": [],
-            "bid_ratios": [],  # awarded/estimated ratios
-            "pricing_stats": {},
-            "currency_distribution": {},
-            "target_estimate": target_estimate
+    # .......................................................... file loading
+
+    def load_tender_from_file(self, fp: str) -> Dict[str, str]:
+        try:
+            with open(fp, "r", encoding="utf-8") as f:
+                text = f.read()
+        except Exception as e:
+            print("❌ File error:", e)
+            return {}
+        return self._parse_tender_content(text)
+
+    def _parse_tender_content(self, content: str) -> Dict[str, str]:
+        tender = {"title": "", "description": "", "estimated_value": ""}
+        lines  = content.strip().split("\n")
+        current, bucket = None, []
+        for ln in lines:
+            l = ln.strip(); low = l.lower()
+            if low.startswith("title:"):
+                if current: tender[current] = "\n".join(bucket).strip()
+                current, bucket = "title", [l[6:].strip()]
+            elif low.startswith("description:"):
+                if current: tender[current] = "\n".join(bucket).strip()
+                current, bucket = "description", [l[12:].strip()]
+            elif low.startswith("estimated value") or low.startswith("estimated_value"):
+                if current: tender[current] = "\n".join(bucket).strip()
+                current = "estimated_value"
+                bucket  = [l.split(":", 1)[1].strip()] if ":" in l else []
+            else:
+                if current: bucket.append(l)
+        if current: tender[current] = "\n".join(bucket).strip()
+        # fallbacks
+        if not tender["title"]:
+            tender["title"] = lines[0] if lines else "Untitled tender"
+            tender["description"] = "\n".join(lines[1:])
+            tender["estimated_value"] = "1000000 SGD"
+        return tender
+
+    # ...................................................... keyword extract
+
+    def extract_keywords(self, desc: str, title: str = "") -> List[str]:
+        prompt = f"""
+        Extract 10–12 specific search keywords for locating similar awards in the
+        GeBIZ dataset. Focus on technologies, service categories and standards.
+
+        Title: {title}
+        Description: {desc}
+
+        Return ONLY a valid JSON list.
+        """
+        try:
+            r = self.model.generate_content(prompt)
+            text = self._clean_json_response(r.text.strip())
+            kws  = json.loads(text)
+            return kws[:12] if isinstance(kws, list) else []
+        except Exception as e:
+            print("⚠️ Gemini keyword error:", e)
+            return self._extract_basic_keywords(f"{title} {desc}")
+
+    # ............................................................ GeBIZ API
+
+    def search_similar_tenders(self, keywords: List[str], limit: int = 50) -> List[Dict]:
+        results, seen = [], set()
+        for kw in keywords:
+            params = {"resource_id": GEBIZ_DATASET_ID, "q": kw, "limit": min(20, limit)}
+            try:
+                r = requests.get(GEBIZ_ENDPOINT, params=params, timeout=20)
+                r.raise_for_status()
+                for rec in r.json()["result"]["records"]:
+                    tid = rec.get("tender_no") or rec.get("ref_no")
+                    if tid and tid not in seen:
+                        seen.add(tid); results.append(rec)
+                        if len(results) >= limit: return results
+            except Exception as e:
+                print(f"⚠️ GeBIZ error for '{kw}':", e)
+        return results
+
+    # ....................................................... pricing stats
+
+    def analyse_pricing(self, awards: List[Dict], est_value: str) -> Dict:
+        out = {
+            "total": len(awards),
+            "with_price": 0,
+            "awards": [],
+            "ratios": [],
+            "stats": {},
+            "target_estimate": est_value,
         }
 
-        target_value = self._extract_numeric_value(target_estimate)
+        est = self._extract_numeric_value(est_value)
 
-        for tender in tenders:
-            estimated = self._extract_numeric_value(self._unwrap_field(tender.get("estimated-value-lot")))
-            awarded = self._extract_numeric_value(self._unwrap_field(tender.get("BT-711-LotResult")))
-            currency = self._unwrap_field(tender.get("BT-710-LotResult"))
+        for a in awards:
+            val = self._extract_numeric_value(a.get("awarded_amt"))
 
-            if estimated and awarded:
-                analysis["estimated_values"].append(estimated)
-                analysis["awarded_values"].append(awarded)
-                analysis["bid_ratios"].append(awarded / estimated)
-                analysis["tenders_with_pricing"] += 1
+            # Only consider meaningful awarded amounts (>= 1000 SGD)
+            if val and val >= 1000 and est:
+                out["awards"].append(val)
+                out["ratios"].append(val / est)
+                out["with_price"] += 1
 
-                # Track currency distribution
-                if currency in analysis["currency_distribution"]:
-                    analysis["currency_distribution"][currency] += 1
-                else:
-                    analysis["currency_distribution"][currency] = 1
+        # Print debugging info
+        print(f"✅ Found {out['with_price']} usable pricing values out of {out['total']} tenders")
 
-        # Calculate statistics
-        if analysis["estimated_values"]:
-            analysis["pricing_stats"] = {
-                "avg_estimated": statistics.mean(analysis["estimated_values"]),
-                "avg_awarded": statistics.mean(analysis["awarded_values"]),
-                "avg_bid_ratio": statistics.mean(analysis["bid_ratios"]),
-                "median_bid_ratio": statistics.median(analysis["bid_ratios"]),
-                "min_bid_ratio": min(analysis["bid_ratios"]),
-                "max_bid_ratio": max(analysis["bid_ratios"]),
-                "std_bid_ratio": statistics.stdev(analysis["bid_ratios"]) if len(analysis["bid_ratios"]) > 1 else 0
+        if out["awards"]:
+            out["stats"] = {
+                "avg_awarded": statistics.mean(out["awards"]),
+                "avg_ratio":   statistics.mean(out["ratios"]),
+                "min_ratio":   min(out["ratios"]),
+                "max_ratio":   max(out["ratios"]),
             }
 
-        return analysis
+        return out
 
-    def generate_bidding_strategy(self, pricing_analysis: Dict, tender_context: str) -> Dict:
-        """Use Gemini to generate bidding strategy based on pricing analysis"""
+    # ........................................................ bid strategy
 
-        stats = pricing_analysis.get("pricing_stats", {})
-        if not stats:
-            return {"error": "Insufficient pricing data for analysis"}
-
+    def generate_bid_range(self, pricing: Dict, tender_ctx: str) -> Dict:
+        if not pricing.get("stats"):
+            return {"error": "Too little pricing data"}
+        p = pricing["stats"]
         prompt = f"""
-        Based on this tender pricing analysis, provide a comprehensive bidding strategy:
+        Using the tender context and historical pricing below, recommend a *bid
+        percentage range* (minimum & maximum) relative to our own cost model.
 
-        TENDER CONTEXT:
-        {tender_context}
+        {tender_ctx}
 
-        PRICING ANALYSIS:
-        - Total similar tenders analyzed: {pricing_analysis['total_tenders']}
-        - Tenders with pricing data: {pricing_analysis['tenders_with_pricing']}
-        - Average bid-to-estimate ratio: {stats.get('avg_bid_ratio', 0):.3f}
-        - Median bid-to-estimate ratio: {stats.get('median_bid_ratio', 0):.3f}
-        - Ratio range: {stats.get('min_bid_ratio', 0):.3f} to {stats.get('max_bid_ratio', 0):.3f}
-        - Standard deviation: {stats.get('std_bid_ratio', 0):.3f}
-        - Target estimate: {pricing_analysis['target_estimate']}
+        PRICING SUMMARY
+            Awards analysed  : {pricing['total']}  (with price {pricing['with_price']})
+            Average bid ratio: {p['avg_ratio']:.3f}
+            Min ↔ Max ratio  : {p['min_ratio']:.3f} – {p['max_ratio']:.3f}
 
-        Please provide:
-        1. Recommended bid percentage (as % of estimated value)
-        2. Risk assessment (Conservative/Moderate/Aggressive)
-        3. Key competitive factors
-        4. Pricing justification
-        5. Alternative strategies
-
-        Format your response as JSON with these keys:
-        {{
-            "recommended_bid_percentage": number,
-            "risk_level": "Conservative/Moderate/Aggressive",
-            "competitive_factors": ["factor1", "factor2", ...],
-            "pricing_justification": "explanation",
-            "alternative_strategies": ["strategy1", "strategy2", ...],
-            "confidence_level": "High/Medium/Low"
-        }}
+        Return ONLY valid JSON with keys:
+            bid_range_min_pct, bid_range_max_pct,
+            risk_level, confidence_level,
+            reasoning (1 short paragraph).
         """
-
         try:
-            response = self.model.generate_content(prompt)
-            strategy_text = response.text.strip()
-
-            # Extract JSON from response
-            import re
-            json_match = re.search(r'\{.*\}', strategy_text, re.DOTALL)
-            if json_match:
-                strategy = json.loads(json_match.group())
-                return strategy
-            else:
-                return {"error": "Could not parse strategy response", "raw_response": strategy_text}
+            r    = self.model.generate_content(prompt)
+            data = json.loads(self._clean_json_object(r.text.strip()))
+            return data
         except Exception as e:
-            return {"error": f"Error generating strategy: {e}"}
+            return {"error": str(e)}
 
-    def analyze_tender(self, tender_title: str, tender_description: str, estimated_value: str) -> TenderAnalysis:
-        """Complete tender analysis workflow"""
-        print("🔍 Step 1: Extracting keywords...")
-        keywords = self.extract_keywords_from_tender(tender_description, tender_title)
-        print(f"📝 Generated keywords: {keywords}")
+    # .................................................... orchestration
 
-        print("🔍 Step 2: Searching similar tenders...")
-        similar_tenders = self.search_similar_tenders(keywords)
-        print(f"📊 Found {len(similar_tenders)} similar tenders")
+    def analyse_tender(self, title: str, desc: str, est_val: str) -> TenderAnalysis:
+        print("🔍 Extracting keywords")
+        kws = self.extract_keywords(desc, title)
+        print("🔍 Searching GeBIZ")
+        similar = self.search_similar_tenders(kws)
+        print("🔍 Analysing pricing")
+        pricing = self.analyse_pricing(similar, est_val)
+        ctx = f"Title: {title}\nDescription: {desc}\nOur estimate: {est_val}"
+        print("🔍 Requesting bid range from Gemini")
+        strategy = self.generate_bid_range(pricing, ctx)
 
-        print("🔍 Step 3: Analyzing pricing...")
-        pricing_analysis = self.analyze_pricing(similar_tenders, estimated_value)
+        # convert range to SGD values if present
+        est_num = self._extract_numeric_value(est_val)
+        for key in ("bid_range_min_pct", "bid_range_max_pct"):
+            try: strategy[key] = float(strategy.get(key, 0))
+            except (TypeError, ValueError): strategy[key] = 0.0
+        if est_num and all(strategy[k] for k in ("bid_range_min_pct", "bid_range_max_pct")):
+            strategy["bid_range_min_amt"] = est_num * strategy["bid_range_min_pct"]
+            strategy["bid_range_max_amt"] = est_num * strategy["bid_range_max_pct"]
 
-        print("🔍 Step 4: Generating bidding strategy...")
-        tender_context = f"Title: {tender_title}\nDescription: {tender_description}\nEstimated Value: {estimated_value}"
-        bid_recommendation = self.generate_bidding_strategy(pricing_analysis, tender_context)
+        return TenderAnalysis(kws, similar, pricing, strategy)
 
-        return TenderAnalysis(
-            keywords=keywords,
-            similar_tenders=similar_tenders,
-            pricing_analysis=pricing_analysis,
-            bid_recommendation=bid_recommendation
-        )
+    # ...................................................... pretty‑printer
 
-    def print_analysis_report(self, analysis: TenderAnalysis):
-        """Print a comprehensive analysis report"""
-        print("\n" + "="*80)
-        print("TENDER ANALYSIS REPORT")
-        print("="*80)
+    def print_report(self, a: TenderAnalysis) -> None:
+        line = "="*90
+        print("\n", line, "\nTENDER ANALYSIS REPORT\n", line, sep="")
 
-        print(f"\n📋 GENERATED KEYWORDS (Detailed & Specific):")
-        for i, keyword in enumerate(analysis.keywords, 1):
-            print(f"  {i}. {keyword}")
+        print("\n📋 KEYWORDS:", ", ".join(a.keywords))
 
-        print(f"\n📊 SIMILAR TENDERS FOUND: {len(analysis.similar_tenders)}")
+        # show up to 5 similar awards
+        print(f"\n📊 SIMILAR AWARDS ({len(a.similar_tenders)}) – showing first 5")
+        for rec in a.similar_tenders[:5]:
+            tno   = rec.get("tender_no") or rec.get("ref_no", "–")
+            price = self._fmt_sgd(self._extract_numeric_value(rec.get("awarded_amt")))
+            desc  = (rec.get("tender_description") or rec.get("description") or "").replace("\n", " ")
+            print(f"  • {tno}  |  {price}  |  {desc[:75]}…")
 
-        # Show some examples of found tenders
-        if analysis.similar_tenders:
-            print(f"\n🔍 SAMPLE MATCHING TENDERS:")
-            for i, tender in enumerate(analysis.similar_tenders[:3], 1):
-                title = self._unwrap_field(tender.get("TI", "No title"))
-                country = self._unwrap_field(tender.get("CY", "Unknown"))
-                print(f"  {i}. {title[:60]}... ({country})")
+        if stats := a.pricing_analysis.get("stats"):
+            print("\n💰 HISTORICAL PRICING")
+            print("  Avg award :", self._fmt_sgd(stats['avg_awarded']))
+            print("  Avg ratio :", f"{stats['avg_ratio']:.2%}")
+            print("  Min–Max   :", f"{stats['min_ratio']:.2%} – {stats['max_ratio']:.2%}")
 
-        if analysis.pricing_analysis.get("pricing_stats"):
-            stats = analysis.pricing_analysis["pricing_stats"]
-            print(f"\n💰 PRICING ANALYSIS:")
-            print(f"  • Total tenders analyzed: {analysis.pricing_analysis['total_tenders']}")
-            print(f"  • Tenders with pricing data: {analysis.pricing_analysis['tenders_with_pricing']}")
-            print(f"  • Average bid-to-estimate ratio: {stats['avg_bid_ratio']:.1%}")
-            print(f"  • Median bid-to-estimate ratio: {stats['median_bid_ratio']:.1%}")
-            print(f"  • Ratio range: {stats['min_bid_ratio']:.1%} - {stats['max_bid_ratio']:.1%}")
-            print(f"  • Standard deviation: {stats['std_bid_ratio']:.1%}")
-
-            # Show currency distribution
-            if analysis.pricing_analysis.get("currency_distribution"):
-                print(f"  • Currency distribution: {analysis.pricing_analysis['currency_distribution']}")
-
-        print(f"\n🎯 BIDDING RECOMMENDATION:")
-        if "error" in analysis.bid_recommendation:
-            print(f"  ❌ {analysis.bid_recommendation['error']}")
+        print("\n🎯 BID RANGE RECOMMENDATION")
+        s = a.bid_recommendation
+        if "error" in s:
+            print("  ❌ ", s["error"])
         else:
-            rec = analysis.bid_recommendation
-            print(f"  • Recommended bid: {rec.get('recommended_bid_percentage', 'N/A'):.1%} of estimated value")
-            print(f"  • Risk level: {rec.get('risk_level', 'N/A')}")
-            print(f"  • Confidence: {rec.get('confidence_level', 'N/A')}")
-            print(f"  • Justification: {rec.get('pricing_justification', 'N/A')}")
+            print(f"  {s['bid_range_min_pct']:.1%} – {s['bid_range_max_pct']:.1%} of est. value")
+            if "bid_range_min_amt" in s:
+                lo = self._fmt_sgd(s['bid_range_min_amt'])
+                hi = self._fmt_sgd(s['bid_range_max_amt'])
+                print(f"  → {lo} – {hi}")
+            print("  Risk      :", s.get("risk_level"))
+            print("  Confidence:", s.get("confidence_level"))
+            print("  Reasoning :", s.get("reasoning"))
 
-            if rec.get('competitive_factors'):
-                print(f"  • Key competitive factors:")
-                for factor in rec['competitive_factors']:
-                    print(f"    - {factor}")
+        print("\n", line, "\n", sep="")
 
-            if rec.get('alternative_strategies'):
-                print(f"  • Alternative strategies:")
-                for strategy in rec['alternative_strategies']:
-                    print(f"    - {strategy}")
+    # ----------------------------------------------------------------- helpers
 
-        print("\n" + "="*80)
+    @staticmethod
+    def _clean_json_response(text: str) -> str:
+        text = re.sub(r"```json\s*|```", "", text).strip()
+        m = re.search(r"\[.*?\]", text, re.DOTALL)
+        if m: return m.group(0)
+        return json.dumps(re.findall(r'"(.*?)"', text))
+
+    @staticmethod
+    def _clean_json_object(text: str) -> str:
+        text = re.sub(r"```json\s*|```", "", text).strip()
+        m = re.search(r"\{.*?\}", text, re.DOTALL)
+        if m: return m.group(0)
+        raise ValueError("No JSON object found")
+
+    @staticmethod
+    def _extract_basic_keywords(text: str) -> List[str]:
+        stop = set("and or the of to in for with by from on at is are this that will".split())
+        words = [w.lower() for w in re.findall(r"[a-zA-Z]{4,}", text)]
+        return list({w for w in words if w not in stop})[:10]
 
 
-def main():
-    """Example usage of the TenderAnalyzer"""
-    analyzer = TenderAnalyzer()
+# ---------------------------------------------------------------------------
+# 4  CLI runner
+# ---------------------------------------------------------------------------
 
-    # Example tender
-    tender_title = "Software Development Services for Public Administration"
-    tender_description = """
-    The contracting authority requires comprehensive software development services 
-    including web application development, database design, API integration, 
-    mobile application development, and ongoing maintenance and support. 
-    The project involves modernizing legacy systems and implementing new digital 
-    solutions for citizen services.
-    """
-    estimated_value = "1200000 EUR"
 
-    print("🚀 Starting Tender Analysis...")
-    print(f"📋 Tender: {tender_title}")
-    print(f"💰 Estimated Value: {estimated_value}")
+def main() -> None:
+    ta = TenderAnalyzer()
 
-    # Perform complete analysis
-    analysis = analyzer.analyze_tender(tender_title, tender_description, estimated_value)
+    tender_file = "backend/fake_tender.txt"   # change to your file
+    if os.path.exists(tender_file):
+        t = ta.load_tender_from_file(tender_file)
+    else:
+        t = {
+            "title": "Software Development Services for Public Administration",
+            "description": (
+                "Comprehensive web & mobile application development, database design, "
+                "API integration and maintenance for modernising citizen‑service portals."
+            ),
+            "estimated_value": "1200000 SGD",
+        }
+        print("⚠️ Using hard‑coded sample tender")
 
-    # Print comprehensive report
-    analyzer.print_analysis_report(analysis)
+    analysis = ta.analyse_tender(t["title"], t["description"], t["estimated_value"])
+    ta.print_report(analysis)
 
 
 if __name__ == "__main__":
-    main()        self.model = genai.GenerativeModel(model_name="gemini-1.5-flash")
+    main()
+
