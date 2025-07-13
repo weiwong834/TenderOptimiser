@@ -6,7 +6,7 @@ Description:
 
 Estimated Value: "2,800,000 EUR"
 
-Example 2: Fleet Management and Logistics Platform
+Example 2: Fleet Management and Logistics Platfom
 Title: "Intelligent Fleet Management and Supply Chain Optimization System"
 
 Description:
