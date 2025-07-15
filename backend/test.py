@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-Tender Analyzer – Singapore GeBIZ version
-----------------------------------------
-• Extracts keywords for a tender using Gemini 1.5 Flash.
+Tender Analyzer – Singapore GeBIZ version (Claude / AWS Bedrock)
+----------------------------------------------------------------
+• Extracts keywords for a tender using Claude 3 Sonnet on Bedrock.
 • Searches the Government‑Procurement‑via‑GeBIZ open dataset for similar awards.
-• Analyses historical pricing and asks Gemini for a recommended bid *range*.
+• Analyses historical pricing and asks Claude for a recommended bid range.
 • Prints a concise console report.
 
-Requires:
-  pip install python-dotenv google-generativeai
+Requirements:
+  pip install python-dotenv boto3 requests
+  (Add your AWS credentials as Replit secrets or env vars.)
 """
 
 from __future__ import annotations
@@ -22,18 +23,53 @@ from dataclasses import dataclass
 from typing import List, Dict, Optional
 
 from dotenv import load_dotenv
-import google.generativeai as genai
 
 # ---------------------------------------------------------------------------
-# 1  Config
+# 1  Config & Bedrock client
 # ---------------------------------------------------------------------------
 
 load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if not GEMINI_API_KEY:
-    raise EnvironmentError("GEMINI_API_KEY env var not set")
 
-genai.configure(api_key=GEMINI_API_KEY)
+import boto3
+
+AWS_REGION   = os.getenv("AWS_REGION", "us-west-2")
+BEDROCK_KEY  = os.getenv("BEDROCK_X_API_KEY")  # optional x-api-key gateway token
+_BEDROCK_MODEL_ID = "anthropic.claude-3-5-haiku-20241022-v1:0"
+
+
+# ❌ REMOVE this:
+# from botocore.handlers import convert_dict_to_headers
+
+def _bedrock_client():
+    """Return a boto3 Bedrock Runtime client."""
+    return boto3.client("bedrock-runtime", region_name=AWS_REGION)
+_bedrock = _bedrock_client() 
+
+
+
+def call_claude(prompt: str,
+                max_tokens: int = 512,
+                temperature: float = 0.2) -> str:
+    """Send a prompt to Claude (Bedrock) and return the reply text."""
+    body = {
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "messages": [
+            {"role": "user", "content": prompt}
+        ]
+    }
+
+    response = _bedrock.invoke_model(
+        modelId=_BEDROCK_MODEL_ID,
+        contentType="application/json",
+        accept="application/json",
+        body=json.dumps(body).encode("utf-8"),
+    )
+    raw = response["body"].read()
+    data = json.loads(raw)
+    return data["content"][0]["text"]
+
 
 GEBIZ_DATASET_ID = "d_acde1106003906a75c3fa052592f2fcb"
 GEBIZ_ENDPOINT   = "https://data.gov.sg/api/action/datastore_search"
@@ -57,10 +93,9 @@ class TenderAnalysis:
 
 
 class TenderAnalyzer:
-    _GEMINI_MODEL = "gemini-2.5-flash"
 
     def __init__(self) -> None:
-        self.model = genai.GenerativeModel(model_name=self._GEMINI_MODEL)
+        pass  # nothing to initialise for Bedrock
 
     # ................................................................. utils
 
@@ -153,12 +188,12 @@ class TenderAnalyzer:
         Return ONLY a valid JSON list.
         """
         try:
-            r = self.model.generate_content(prompt)
-            text = self._clean_json_response(r.text.strip())
+            r = call_claude(prompt, max_tokens=200, temperature=0)
+            text = self._clean_json_response(r.strip())
             kws  = json.loads(text)
             return kws[:12] if isinstance(kws, list) else []
         except Exception as e:
-            print("⚠️ Gemini keyword error:", e)
+            print("⚠️ Claude keyword error:", e)
             return self._extract_basic_keywords(f"{title} {desc}")
 
     # ............................................................ GeBIZ API
@@ -235,7 +270,9 @@ class TenderAnalyzer:
         est_val = pricing.get("target_estimate", "an unknown value")  # ✅ fix here
 
         prompt = f"""
-        Using the tender context and historical pricing below, recommend an optimal numeric          bid range (minimum and maximum) in SGD and percentages relative to our estimated             tender value.
+        Using the tender context and historical pricing below, recommend an optimal
+        numeric bid range (minimum and maximum) in SGD and percentages relative to
+        our estimated tender value.
 
         {tender_ctx}
 
@@ -243,10 +280,10 @@ class TenderAnalyzer:
         - Total analyzed awards: {pricing['total']}
         - Awards with valid pricing: {pricing['with_price']}
         - Average awarded amount: SGD {p['avg_awarded']:.2f}
-        - Average bid-to-estimate ratio: {p['avg_ratio']:.2%}
+        - Average bid‑to‑estimate ratio: {p['avg_ratio']:.2%}
         - Minimum ratio: {p['min_ratio']:.2%}, Maximum ratio: {p['max_ratio']:.2%}
 
-        Provide ONLY a JSON response in this format:
+        Provide ONLY a JSON response in this exact format:
         {{
           "bid_range_min_sgd": number,
           "bid_range_max_sgd": number,
@@ -258,8 +295,8 @@ class TenderAnalyzer:
         }}
         """
         try:
-            response = self.model.generate_content(prompt)
-            data = json.loads(self._clean_json_object(response.text.strip()))
+            reply = call_claude(prompt, max_tokens=400)
+            data = json.loads(self._clean_json_object(reply.strip()))
             return data
         except Exception as e:
             return {"error": str(e)}
@@ -275,15 +312,17 @@ class TenderAnalyzer:
         print("🔍 Analysing pricing")
         pricing = self.analyse_pricing(similar, est_val)
         ctx = f"Title: {title}\nDescription: {desc}\nOur estimate: {est_val}"
-        print("🔍 Requesting bid range from Gemini")
+        print("🔍 Requesting bid range from Claude")
         strategy = self.generate_bid_range(pricing, ctx)
 
         # convert range to SGD values if present
         est_num = self._extract_numeric_value(est_val)
         for key in ("bid_range_min_pct", "bid_range_max_pct"):
-            try: strategy[key] = float(strategy.get(key, 0))
-            except (TypeError, ValueError): strategy[key] = 0.0
-        if est_num and all(strategy[k] for k in ("bid_range_min_pct", "bid_range_max_pct")):
+            try:
+                strategy[key] = float(strategy.get(key, 0))
+            except (TypeError, ValueError):
+                strategy[key] = 0.0
+        if est_num and all(strategy.get(k) for k in ("bid_range_min_pct", "bid_range_max_pct")):
             strategy["bid_range_min_amt"] = est_num * strategy["bid_range_min_pct"]
             strategy["bid_range_max_amt"] = est_num * strategy["bid_range_max_pct"]
 
@@ -297,8 +336,8 @@ class TenderAnalyzer:
 
         print("\n📋 KEYWORDS:", ", ".join(a.keywords))
 
-        # show up to 5 similar awards
-        print(f"\n📊 SIMILAR AWARDS ({len(a.similar_tenders)}) – showing first 5")
+        # show up to 15 similar awards
+        print(f"\n📊 SIMILAR AWARDS ({len(a.similar_tenders)}) – showing first 15")
         for rec in a.similar_tenders[:15]:
             tno   = rec.get("tender_no") or rec.get("ref_no", "–")
             price = self._fmt_sgd(self._extract_numeric_value(rec.get("awarded_amt")))
@@ -358,7 +397,7 @@ class TenderAnalyzer:
 def main() -> None:
     ta = TenderAnalyzer()
 
-    tender_file = "data/sampple.txt"   # change to your file
+    tender_file = "data/sample.txt"   # change to your file
     if os.path.exists(tender_file):
         t = ta.load_tender_from_file(tender_file)
     else:
@@ -378,4 +417,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
